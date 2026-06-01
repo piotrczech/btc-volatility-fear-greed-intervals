@@ -10,6 +10,7 @@ Usage:
   ./hpc.sh smoke wcss cpu|gpu [--dry-run]
   ./hpc.sh submit serverai returns|classical|neural [--dry-run]
   ./hpc.sh submit wcss returns|classical|neural [--dry-run]
+  ./hpc.sh aggregate serverai|wcss [--dry-run]
   ./hpc.sh logs
 EOF
 }
@@ -197,6 +198,20 @@ smoke_run() {
   fi
 }
 
+aggregate_run() {
+  local cluster="$1"
+  local results_root
+  local raw_dir
+  local merged_dir
+
+  results_root="${OUT:-results}"
+  raw_dir="${RAW_DIR:-$results_root/raw_predictions}"
+  merged_dir="${MERGED_DIR:-$results_root/merged}"
+
+  activate_env "$cluster" cpu
+  python aggregate_results.py --raw-dir "$raw_dir" --out-dir "$merged_dir"
+}
+
 submit_single_job() {
   local action="$1"
   local cluster="$2"
@@ -223,9 +238,9 @@ submit_single_job() {
       cpus="${CPUS:-8}"
       mem="${MEM:-24G}"
       if [ "$action" = "setup" ]; then
-        time_limit="${TIME:-01:30:00}"
+        time_limit="${TIME:-00:30:00}"
       else
-        time_limit="${TIME:-00:45:00}"
+        time_limit="${TIME:-00:30:00}"
       fi
     else
       cpus="${CPUS:-4}"
@@ -278,6 +293,57 @@ submit_single_job() {
   fi
 }
 
+submit_aggregate_job() {
+  local cluster="$1"
+  local dry_run="${2:-}"
+  local project
+  local script
+  local partition
+  local account_arg=()
+  local cpus
+  local mem
+  local time_limit
+  local cmd=()
+
+  project="$(project_dir)"
+  script="$project/hpc.sh"
+  cd "$project"
+
+  if [ "$cluster" = "serverai" ]; then
+    partition="${PARTITION:-serverai}"
+  elif [ "$cluster" = "wcss" ]; then
+    account_arg=(-A "${ACCOUNT:-hpc-piotrczech-1779870483}")
+    partition="${PARTITION:-bem2-cpu-short}"
+  else
+    die "Unknown cluster: $cluster"
+  fi
+
+  cpus="${CPUS:-2}"
+  mem="${MEM:-8G}"
+  time_limit="${TIME:-00:30:00}"
+
+  cmd=(
+    sbatch
+    -J btc-aggregate
+    "${account_arg[@]}"
+    -p "$partition"
+    -N 1
+    -c "$cpus"
+    --mem "$mem"
+    --time "$time_limit"
+    --export "ALL,HPC_BATCH_EXEC=1,PROJECT_DIR=$project"
+    "$script" aggregate "$cluster"
+  )
+
+  echo "Submitting aggregate on $cluster"
+  if [ "$dry_run" = "--dry-run" ]; then
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+  else
+    "${cmd[@]}"
+  fi
+}
+
 run_setup_or_smoke() {
   local action="$1"
   local cluster="$2"
@@ -294,6 +360,18 @@ run_setup_or_smoke() {
     smoke) smoke_run "$cluster" "$device" ;;
     *) die "Unknown action: $action" ;;
   esac
+}
+
+run_aggregate() {
+  local cluster="$1"
+  local dry_run="${2:-}"
+
+  if [ "$dry_run" = "--dry-run" ] || ! in_slurm_context; then
+    submit_aggregate_job "$cluster" "$dry_run"
+    return
+  fi
+
+  aggregate_run "$cluster"
 }
 
 grid_for_kind() {
@@ -420,6 +498,12 @@ case "$cmd" in
     dry_run="$(parse_dry_run_arg "${@:4}")"
     validate_cluster "$2"
     submit_array "$2" "$3" "$dry_run"
+    ;;
+  aggregate)
+    [ "$#" -ge 2 ] || { usage; exit 1; }
+    dry_run="$(parse_dry_run_arg "${@:3}")"
+    validate_cluster "$2"
+    run_aggregate "$2" "$dry_run"
     ;;
   logs)
     [ "$#" -eq 1 ] || { usage; exit 1; }

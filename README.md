@@ -157,8 +157,11 @@ Per-task artifacts:
 Aggregate:
 
 ```bash
-python aggregate_results.py --raw-dir results/raw_predictions --out-dir results/merged
+./hpc.sh aggregate serverai
+./hpc.sh aggregate serverai --dry-run
 ```
+
+Aggregation runs as a short CPU SLURM job outside existing SLURM jobs/allocations. By default it reads `${OUT:-results}/raw_predictions` and writes `${OUT:-results}/merged`; override exact paths with `RAW_DIR=...` and `MERGED_DIR=...`.
 
 Main summaries:
 
