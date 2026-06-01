@@ -74,7 +74,7 @@ python run_task.py --mode returns --task-index 0 --grid configs/grid_returns_bas
 python run_task.py --mode classical --task-index 0 --grid configs/grid_classical.csv --csv btc.csv --out results
 ```
 
-HPC setup and smoke. Smoke uses `btc.csv` when present; set `SMOKE_SYNTHETIC=1` only for an environment-only test without real data.
+HPC setup and smoke submit one-off SLURM jobs when run outside an existing SLURM job/allocation. Smoke uses `btc.csv` when present; set `SMOKE_SYNTHETIC=1` only for an environment-only test without real data.
 
 ```bash
 ./hpc.sh setup serverai cpu
@@ -82,6 +82,22 @@ HPC setup and smoke. Smoke uses `btc.csv` when present; set `SMOKE_SYNTHETIC=1` 
 
 ./hpc.sh setup serverai gpu
 ./hpc.sh smoke serverai gpu
+```
+
+Observed `serverai` GPU layout from `sinfo -o "%P %l %D %c %G"`:
+
+```text
+PARTITION TIMELIMIT NODES CPUS GRES
+serverai* infinite 1 64 gpu:gpu0:2(S:0),gpu:gpu1:2(S:1)
+```
+
+GPU commands default to `GRES=${GRES:-gpu:1}`. If a real submission fails because the cluster requires typed GRES, retry with `gpu:gpu0:1` or `gpu:gpu1:1`:
+
+```bash
+GRES=gpu:gpu0:1 ./hpc.sh setup serverai gpu
+GRES=gpu:gpu0:1 ./hpc.sh smoke serverai gpu
+GRES=gpu:gpu0:1 ./hpc.sh submit serverai neural
+GRES=gpu:gpu1:1 ./hpc.sh submit serverai neural
 ```
 
 Submit arrays:
@@ -102,7 +118,18 @@ Useful variants:
 CONCURRENCY=4 ./hpc.sh submit serverai classical
 REGIME_MODE=percentile OUT=results_percentile ./hpc.sh submit serverai classical
 HOLDOUT_START=2026-01-01 HOLDOUT_END=2026-05-31 OUT=results_holdout ./hpc.sh submit serverai classical
+./hpc.sh setup serverai gpu --dry-run
+./hpc.sh smoke serverai gpu --dry-run
+./hpc.sh submit serverai neural --dry-run
 ./hpc.sh submit serverai classical --dry-run
+```
+
+If those dry-runs show `--gres=gpu:1` but a real GPU submission is rejected, verify the typed request before resubmitting:
+
+```bash
+GRES=gpu:gpu0:1 ./hpc.sh setup serverai gpu --dry-run
+GRES=gpu:gpu0:1 ./hpc.sh smoke serverai gpu --dry-run
+GRES=gpu:gpu0:1 ./hpc.sh submit serverai neural --dry-run
 ```
 
 SLURM logs are left to the cluster defaults. The project does not create a persistent `logs/` directory.

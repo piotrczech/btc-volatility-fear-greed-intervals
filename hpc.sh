@@ -4,10 +4,10 @@ set -euo pipefail
 usage() {
   cat <<'EOF'
 Usage:
-  ./hpc.sh setup serverai cpu|gpu
-  ./hpc.sh setup wcss cpu|gpu
-  ./hpc.sh smoke serverai cpu|gpu
-  ./hpc.sh smoke wcss cpu|gpu
+  ./hpc.sh setup serverai cpu|gpu [--dry-run]
+  ./hpc.sh setup wcss cpu|gpu [--dry-run]
+  ./hpc.sh smoke serverai cpu|gpu [--dry-run]
+  ./hpc.sh smoke wcss cpu|gpu [--dry-run]
   ./hpc.sh submit serverai returns|classical|neural [--dry-run]
   ./hpc.sh submit wcss returns|classical|neural [--dry-run]
   ./hpc.sh logs
@@ -21,6 +21,39 @@ die() {
 
 project_dir() {
   printf '%s\n' "${PROJECT_DIR:-$(pwd)}"
+}
+
+validate_cluster() {
+  case "$1" in
+    serverai|wcss) ;;
+    *) die "Unknown cluster: $1" ;;
+  esac
+}
+
+validate_device() {
+  case "$1" in
+    cpu|gpu) ;;
+    *) die "Unknown device: $1" ;;
+  esac
+}
+
+parse_dry_run_arg() {
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+  if [ "$#" -eq 1 ] && [ "$1" = "--dry-run" ]; then
+    printf '%s\n' "$1"
+    return 0
+  fi
+  if [ "$#" -eq 1 ]; then
+    die "Unknown option: $1"
+  fi
+  usage
+  exit 1
+}
+
+in_slurm_context() {
+  [ -n "${HPC_BATCH_EXEC:-}" ] || [ -n "${SLURM_JOB_ID:-}" ] || [ -n "${SLURM_JOBID:-}" ]
 }
 
 venv_path() {
@@ -164,6 +197,105 @@ smoke_run() {
   fi
 }
 
+submit_single_job() {
+  local action="$1"
+  local cluster="$2"
+  local device="$3"
+  local dry_run="${4:-}"
+  local project
+  local script
+  local partition
+  local account_arg=()
+  local gres_arg=()
+  local cpus
+  local mem
+  local time_limit
+  local job
+  local cmd=()
+
+  project="$(project_dir)"
+  script="$project/hpc.sh"
+  cd "$project"
+
+  if [ "$cluster" = "serverai" ]; then
+    partition="${PARTITION:-serverai}"
+    if [ "$device" = "gpu" ]; then
+      cpus="${CPUS:-8}"
+      mem="${MEM:-24G}"
+      if [ "$action" = "setup" ]; then
+        time_limit="${TIME:-01:30:00}"
+      else
+        time_limit="${TIME:-00:45:00}"
+      fi
+    else
+      cpus="${CPUS:-4}"
+      mem="${MEM:-8G}"
+      if [ "$action" = "setup" ]; then
+        time_limit="${TIME:-01:00:00}"
+      else
+        time_limit="${TIME:-00:30:00}"
+      fi
+    fi
+  elif [ "$cluster" = "wcss" ]; then
+    account_arg=(-A "${ACCOUNT:-hpc-piotrczech-1779870483}")
+    cpus="${CPUS:-8}"
+    if [ "$device" = "gpu" ]; then
+      partition="${PARTITION:-lem-gpu-short}"
+    else
+      partition="${PARTITION:-bem2-cpu-short}"
+    fi
+    mem="${MEM:-32G}"
+    time_limit="${TIME:-08:00:00}"
+  else
+    die "Unknown cluster: $cluster"
+  fi
+
+  if [ "$device" = "gpu" ]; then
+    gres_arg=(--gres="${GRES:-gpu:1}")
+  fi
+
+  job="btc-$action-$device"
+  cmd=(
+    sbatch
+    -J "$job"
+    "${account_arg[@]}"
+    -p "$partition"
+    -N 1
+    -c "$cpus"
+    --mem "$mem"
+    --time "$time_limit"
+    "${gres_arg[@]}"
+    --export "ALL,HPC_BATCH_EXEC=1,PROJECT_DIR=$project"
+    "$script" "$action" "$cluster" "$device"
+  )
+
+  echo "Submitting $action on $cluster/$device"
+  if [ "$dry_run" = "--dry-run" ]; then
+    printf '%q ' "${cmd[@]}"
+    printf '\n'
+  else
+    "${cmd[@]}"
+  fi
+}
+
+run_setup_or_smoke() {
+  local action="$1"
+  local cluster="$2"
+  local device="$3"
+  local dry_run="${4:-}"
+
+  if [ "$dry_run" = "--dry-run" ] || ! in_slurm_context; then
+    submit_single_job "$action" "$cluster" "$device" "$dry_run"
+    return
+  fi
+
+  case "$action" in
+    setup) setup_env "$cluster" "$device" ;;
+    smoke) smoke_run "$cluster" "$device" ;;
+    *) die "Unknown action: $action" ;;
+  esac
+}
+
 grid_for_kind() {
   case "$1" in
     returns) printf '%s\n' "${GRID:-configs/grid_returns_baseline.csv}" ;;
@@ -190,6 +322,7 @@ submit_array() {
   local device
   local venv
   local job
+  local cmd=()
 
   project="$(project_dir)"
   cd "$project"
@@ -269,16 +402,24 @@ EOF
 cmd="${1:-}"
 case "$cmd" in
   setup)
-    [ "$#" -eq 3 ] || { usage; exit 1; }
-    setup_env "$2" "$3"
+    [ "$#" -ge 3 ] || { usage; exit 1; }
+    dry_run="$(parse_dry_run_arg "${@:4}")"
+    validate_cluster "$2"
+    validate_device "$3"
+    run_setup_or_smoke setup "$2" "$3" "$dry_run"
     ;;
   smoke)
-    [ "$#" -eq 3 ] || { usage; exit 1; }
-    smoke_run "$2" "$3"
+    [ "$#" -ge 3 ] || { usage; exit 1; }
+    dry_run="$(parse_dry_run_arg "${@:4}")"
+    validate_cluster "$2"
+    validate_device "$3"
+    run_setup_or_smoke smoke "$2" "$3" "$dry_run"
     ;;
   submit)
     [ "$#" -ge 3 ] || { usage; exit 1; }
-    submit_array "$2" "$3" "${4:-}"
+    dry_run="$(parse_dry_run_arg "${@:4}")"
+    validate_cluster "$2"
+    submit_array "$2" "$3" "$dry_run"
     ;;
   logs)
     [ "$#" -eq 1 ] || { usage; exit 1; }
