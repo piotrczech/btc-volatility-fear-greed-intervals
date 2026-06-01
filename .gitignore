@@ -1,0 +1,29 @@
+# Data
+btc.csv
+*.parquet
+*.feather
+
+# Experiment outputs
+results/
+results_*/
+logs/
+slurm-*.out
+*.out
+*.err
+
+# Python environments and caches
+.venv*/
+venvs/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Local OS/editor files
+.DS_Store
+Thumbs.db
+
+.agents
+.codex
