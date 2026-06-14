@@ -1,10 +1,16 @@
 # Data
-btc.csv
 *.parquet
 *.feather
 
 # Experiment outputs
-results/
+results/*
+!results/merged/
+results/merged/*
+!results/merged/candidate_ranking.csv
+!results/merged/interval_summary_global.csv
+!results/merged/interval_summary_by_seed.csv
+!results/merged/interval_summary_by_regime.csv
+!results/merged/regime_signed_gap_pivot.csv
 results_*/
 logs/
 slurm-*.out
@@ -19,6 +25,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+notebooks/
 .ipynb_checkpoints/
 
 # Local OS/editor files
@@ -27,3 +34,10 @@ Thumbs.db
 
 .agents
 .codex
+
+bibliography
+tables
+assets
+main.tex
+main.out
+main.pdf
