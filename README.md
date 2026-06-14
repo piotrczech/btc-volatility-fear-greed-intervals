@@ -33,13 +33,19 @@ hpc.sh                   # setup/smoke/submit helper
 slurm/array.sbatch       # single SLURM worker
 src/                     # data, models, intervals, runner
 configs/                 # grid CSVs
+data/btc_sample.csv      # 40-line public schema/sample file
+results/merged/          # selected public aggregate summaries
 ```
 
-Generated outputs go to `results/` or `results_*` and are ignored by git.
+Heavy generated outputs go to `results/` or `results_*` and are ignored by git. The repository keeps only selected aggregate CSV summaries under `results/merged/`.
 
 ## Input
 
-Place `btc.csv` in the project root. Required columns:
+The full `btc.csv` input dataset is not distributed in this repository because it combines third-party time series that may have redistribution limits. Keep the full file private and place it in the project root when running experiments locally or on HPC. The root `btc.csv` path is ignored by git.
+
+The repository includes `data/btc_sample.csv`, a 40-line sample with the expected schema. It is intended only for schema inspection and lightweight loader checks; it is not sufficient to reproduce the paper results.
+
+Required columns:
 
 ```text
 date, open, high, low, close, volume,
@@ -50,6 +56,22 @@ wikipedia-reads, fear-and-greed
 ```
 
 Targets, OHLC volatility estimators, lagged/rolling features and regime labels are created internally.
+
+## Data Availability
+
+The code, experiment grids, small aggregate summaries, and a minimal input sample are public. Full reproduction requires reconstructing the private `btc.csv` file from the original data providers using the schema above, then running the benchmark commands with `--csv btc.csv`.
+
+The committed aggregate summaries are:
+
+```text
+results/merged/interval_summary_global.csv
+results/merged/interval_summary_by_seed.csv
+results/merged/interval_summary_by_regime.csv
+results/merged/regime_signed_gap_pivot.csv
+results/merged/candidate_ranking.csv
+```
+
+The full merged prediction table, raw predictions, smoke outputs, robustness outputs, notebooks, and the private root `btc.csv` are intentionally excluded from git.
 
 ## Run
 
