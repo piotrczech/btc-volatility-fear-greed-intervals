@@ -196,3 +196,24 @@ candidate_ranking.csv
 ```
 
 Key metrics: coverage, signed coverage error, upper/lower miss rates, average width, interval score, pinball losses and regime instability. SHAP and deeper interpretation should be run posthoc for selected configurations only.
+
+## Evaluate saved predictions
+
+Rebuild descriptive summaries without retraining:
+
+```bash
+python aggregate_results.py --predictions results/merged/interval_predictions_all.csv
+```
+
+Aggregation rejects duplicate configuration/seed/date records and unequal seed
+panels. Summaries include `n_records`, `n_dates` and `n_seeds`; `n` is an alias
+for `n_records`. Seeds share realized dates, so pooled summaries are descriptive
+and omit classical calibration p-values.
+
+`src.diagnostics` provides point evaluation by forecast engine and a date-block
+bootstrap that keeps seeds together and pairs methods on the same sampled dates.
+Point evaluation reports both volatility- and variance-scale QLIKE. Variance
+QLIKE clips volatility at `1e-6` before squaring, preserving a variance floor of
+`1e-12`. Quantile medians remain separate from point-residual forecasts.
+Optuna's volatility-scale objective is unchanged. Full evaluation requires saved
+predictions; the public data sample does not reproduce the complete benchmark.

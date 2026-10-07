@@ -7,46 +7,50 @@ from typing import List
 
 import numpy as np
 import pandas as pd
-from scipy import stats
 
 
-def kupiec_uc_test(hit: np.ndarray, nominal: float):
-    hit = np.asarray(hit, dtype=int)
-    n = len(hit)
-    if n < 30:
-        return np.nan, np.nan
-    n1 = int(hit.sum())
-    n0 = n - n1
-    p = np.clip(nominal, 1e-8, 1 - 1e-8)
-    phat = np.clip(n1 / n, 1e-8, 1 - 1e-8)
-    ll0 = n0 * np.log(1 - p) + n1 * np.log(p)
-    ll1 = n0 * np.log(1 - phat) + n1 * np.log(phat)
-    lr = -2 * (ll0 - ll1)
-    return float(lr), float(1 - stats.chi2.cdf(lr, df=1))
+CONFIG_KEY = ["target", "block", "model", "method"]
+RECORD_KEY = CONFIG_KEY + ["seed", "date"]
 
 
-def christoffersen_independence_test(hit: np.ndarray):
-    hit = np.asarray(hit, dtype=int)
-    if len(hit) < 30:
-        return np.nan, np.nan
-    x = hit[:-1]
-    y = hit[1:]
-    n00 = int(np.sum((x == 0) & (y == 0)))
-    n01 = int(np.sum((x == 0) & (y == 1)))
-    n10 = int(np.sum((x == 1) & (y == 0)))
-    n11 = int(np.sum((x == 1) & (y == 1)))
-    denom0 = max(n00 + n01, 1)
-    denom1 = max(n10 + n11, 1)
-    pi01 = np.clip(n01 / denom0, 1e-8, 1 - 1e-8)
-    pi11 = np.clip(n11 / denom1, 1e-8, 1 - 1e-8)
-    pi1 = np.clip((n01 + n11) / max(n00 + n01 + n10 + n11, 1), 1e-8, 1 - 1e-8)
-    ll_iid = ((n00 + n10) * np.log(1 - pi1)) + ((n01 + n11) * np.log(pi1))
-    ll_markov = (
-        n00 * np.log(1 - pi01) + n01 * np.log(pi01) +
-        n10 * np.log(1 - pi11) + n11 * np.log(pi11)
-    )
-    lr = -2 * (ll_iid - ll_markov)
-    return float(lr), float(1 - stats.chi2.cdf(lr, df=1))
+def validate_panel(df: pd.DataFrame, expected_seeds=None) -> pd.DataFrame:
+    """Reject duplicates and unequal panels; seeds are repetitions of dates."""
+    from src.data import SEEDS
+
+    expected = set(SEEDS if expected_seeds is None else expected_seeds)
+    required = RECORD_KEY + ["fg_regime", "y_true", "y_pred", "interval_engine", "nominal_coverage"]
+    missing = set(required) - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing prediction columns: {sorted(missing)}")
+    if not len(df) or df[required].isna().any().any():
+        raise ValueError("Empty panel or null prediction keys/values")
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="raise")
+    if df.duplicated(RECORD_KEY).any():
+        bad = df.loc[df.duplicated(RECORD_KEY, keep=False), RECORD_KEY].head()
+        raise ValueError(f"Duplicate prediction records:\n{bad.to_string(index=False)}")
+    if not np.isfinite(df[["y_true", "y_pred", "nominal_coverage"]].to_numpy(float)).all():
+        raise ValueError("Nonfinite prediction values")
+    # The realized target and state belong to a date, not to a model or seed.
+    common = df.groupby(["target", "date"], observed=True)[["fg_regime", "y_true"]].nunique()
+    if common.gt(1).any().any():
+        raise ValueError("Conflicting states or target realizations on common dates")
+    reference_dates = {}
+    for key, grp in df.groupby(CONFIG_KEY, observed=True, sort=True):
+        found = set(grp["seed"].unique())
+        if found != expected:
+            raise ValueError(f"Incomplete seeds for {key}: expected {sorted(expected)}, found {sorted(found)}")
+        counts = grp.groupby("date", observed=True)["seed"].nunique()
+        if not counts.eq(len(expected)).all():
+            raise ValueError(f"Unequal date/seed panel for {key}")
+        dates = frozenset(counts.index)
+        target = key[0]
+        if target in reference_dates and dates != reference_dates[target]:
+            raise ValueError(f"Unequal configuration dates for {key}")
+        reference_dates[target] = dates
+        if grp["nominal_coverage"].nunique() != 1 or grp["interval_engine"].nunique() != 1:
+            raise ValueError(f"Mixed nominal coverage or interval engines for {key}")
+    return df.sort_values(RECORD_KEY, kind="stable").reset_index(drop=True)
 
 
 def read_prediction_files(raw_dir: Path) -> pd.DataFrame:
@@ -72,13 +76,13 @@ def read_prediction_files(raw_dir: Path) -> pd.DataFrame:
 
 def summarize_group(grp: pd.DataFrame) -> pd.Series:
     nominal = float(grp["nominal_coverage"].iloc[0]) if "nominal_coverage" in grp.columns else 0.95
-    hit = grp["hit"].astype(int).to_numpy()
-    uc_lr, uc_p = kupiec_uc_test(hit, nominal=nominal)
-    ind_lr, ind_p = christoffersen_independence_test(hit)
 
     coverage = float(grp["hit"].mean())
     return pd.Series({
-        "n": int(len(grp)),
+        "n": int(len(grp)),  # Historical alias for n_records.
+        "n_records": int(len(grp)),
+        "n_dates": int(grp["date"].nunique()),
+        "n_seeds": int(grp["seed"].nunique()),
         "coverage": coverage,
         "signed_coverage_error": coverage - nominal,
         "abs_coverage_gap": abs(coverage - nominal),
@@ -94,41 +98,53 @@ def summarize_group(grp: pd.DataFrame) -> pd.Series:
         "pinball_upper": float(grp["pinball_upper"].mean()),
         "point_loss": float(grp["point_loss"].mean()),
         "nominal_coverage": nominal,
-        "uc_lr": uc_lr,
-        "uc_p": uc_p,
-        "ind_lr": ind_lr,
-        "ind_p": ind_p,
+        "point_loss_scale": "return_squared_error" if str(grp["target"].iloc[0]) == "ret_future_1" else "volatility_qlike",
+        "inference": "descriptive_only",
     })
+
+
+def summarize_panel(df: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
+    # Explicit iteration keeps key columns available with both pandas 2 and 3.
+    return pd.DataFrame([
+        {**dict(zip(keys, key)), **summarize_group(grp).to_dict()}
+        for key, grp in df.groupby(keys, observed=True, dropna=False, sort=True)
+    ])
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Aggregate raw HPC interval prediction CSVs.")
     p.add_argument("--raw-dir", default="results/raw_predictions")
     p.add_argument("--out-dir", default="results/merged")
+    p.add_argument("--predictions", type=Path, help="Read an archived merged CSV instead of raw files.")
+    p.add_argument("--expected-seeds", nargs="+", type=int, default=[111, 222, 333, 444, 555, 666])
     args = p.parse_args()
 
     raw_dir = Path(args.raw_dir)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    df = read_prediction_files(raw_dir)
-    df.to_csv(out_dir / "interval_predictions_all.csv", index=False)
+    df = (pd.read_csv(args.predictions, parse_dates=["date"]) if args.predictions
+          else read_prediction_files(raw_dir))
+    df = validate_panel(df, args.expected_seeds)
+    output_predictions = out_dir / "interval_predictions_all.csv"
+    if not args.predictions or args.predictions.resolve() != output_predictions.resolve():
+        df.to_csv(output_predictions, index=False)
 
     key = ["target", "block", "model", "method", "seed"]
-    seed_summary = df.groupby(key, dropna=False).apply(summarize_group).reset_index()
+    seed_summary = summarize_panel(df, key)
     seed_summary.to_csv(out_dir / "interval_summary_by_seed.csv", index=False)
 
     global_key = ["target", "block", "model", "method"]
-    global_summary = df.groupby(global_key, dropna=False).apply(summarize_group).reset_index()
+    global_summary = summarize_panel(df, global_key)
     global_summary = global_summary.sort_values(["target", "abs_coverage_gap", "avg_width"])
     global_summary.to_csv(out_dir / "interval_summary_global.csv", index=False)
 
     regime_key = ["target", "block", "model", "method", "fg_regime"]
-    regime_summary = df.groupby(regime_key, dropna=False).apply(summarize_group).reset_index()
+    regime_summary = summarize_panel(df, regime_key)
     regime_summary = regime_summary.sort_values(["target", "block", "model", "method", "fg_regime"])
     regime_summary.to_csv(out_dir / "interval_summary_by_regime.csv", index=False)
 
-    # Coverage pivot helpful for article inspection.
+    # Compare signed coverage errors across states.
     pivot = regime_summary.pivot_table(
         index=["target", "block", "model", "method"],
         columns="fg_regime",

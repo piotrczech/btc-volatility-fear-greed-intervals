@@ -9,15 +9,24 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 from .data import DEFAULT_MIN_REGIME_CALIB_N
 
-def qlike_loss(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12) -> float:
-    y_true = np.clip(np.asarray(y_true, dtype=float), eps, None)
-    y_pred = np.clip(np.asarray(y_pred, dtype=float), eps, None)
-    return float(np.mean(np.log(y_pred) + y_true / y_pred))
+def qlike_loss(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12,
+               *, scale: str = "volatility") -> float:
+    """QLIKE from volatility inputs; default preserves historical tuning."""
+    return float(np.mean(qlike_vector(y_true, y_pred, eps, scale=scale)))
 
 
-def qlike_vector(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12) -> np.ndarray:
+def qlike_vector(y_true: np.ndarray, y_pred: np.ndarray, eps: float = 1e-12,
+                 *, scale: str = "volatility") -> np.ndarray:
+    """Clip to positive volatility BEFORE squaring for variance evaluation."""
+    if not np.isfinite(eps) or eps <= 0:
+        raise ValueError("eps must be positive and finite")
+    if scale not in {"volatility", "variance"}:
+        raise ValueError(f"Unknown QLIKE scale: {scale}")
     y_true = np.clip(np.asarray(y_true, dtype=float), eps, None)
     y_pred = np.clip(np.asarray(y_pred, dtype=float), eps, None)
+    if scale == "variance":
+        y_true = y_true ** 2
+        y_pred = y_pred ** 2
     return np.log(y_pred) + y_true / y_pred
 
 
@@ -98,10 +107,11 @@ def apply_regime_radius(
     return out
 
 
-def point_loss_vector(y_true: np.ndarray, y_pred: np.ndarray, target: str) -> np.ndarray:
+def point_loss_vector(y_true: np.ndarray, y_pred: np.ndarray, target: str,
+                      *, qlike_scale: str = "volatility") -> np.ndarray:
     if target == "ret_future_1":
         return (np.asarray(y_true) - np.asarray(y_pred)) ** 2
-    return qlike_vector(y_true, y_pred)
+    return qlike_vector(y_true, y_pred, scale=qlike_scale)
 
 
 def append_raw_rows(
@@ -169,6 +179,7 @@ def append_raw_rows(
             "width": float(width[i]),
             "interval_score": float(interval_score[i]),
             "point_loss": float(loss[i]),
+            "point_loss_scale": "return_squared_error" if target == "ret_future_1" else "volatility_qlike",
             "pinball_lower": float(pb_lower[i]),
             "pinball_median": float(pb_median[i]),
             "pinball_upper": float(pb_upper[i]),
@@ -181,7 +192,9 @@ def append_raw_rows(
         rows.append(row)
 
 
-def summarize_point_metrics(y_true: np.ndarray, y_pred: np.ndarray, target: str) -> Dict[str, float]:
+def summarize_point_metrics(y_true: np.ndarray, y_pred: np.ndarray, target: str) -> Dict:
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
     mask = np.isfinite(y_true) & np.isfinite(y_pred)
     y_true = y_true[mask]
     y_pred = y_pred[mask]
@@ -199,5 +212,8 @@ def summarize_point_metrics(y_true: np.ndarray, y_pred: np.ndarray, target: str)
         out["hit_rate"] = float(np.mean(np.sign(y_true) == np.sign(y_pred)))
     else:
         out["qlike"] = qlike_loss(y_true, np.clip(y_pred, 1e-8, None))
+        out["qlike_volatility"] = out["qlike"]
+        out["qlike_variance"] = qlike_loss(y_true, y_pred, eps=1e-6, scale="variance")
+        out["qlike_variance_input_epsilon"] = 1e-6
+    out["qlike_scale"] = "volatility" if target != "ret_future_1" else "not_applicable"
     return out
-

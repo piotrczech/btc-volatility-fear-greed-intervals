@@ -143,8 +143,9 @@ def load_df(csv_path: Path, regime_mode: str = "fixed", fear_threshold: float = 
         s = df[col].replace([np.inf, -np.inf], np.nan)
         # Some attention/sentiment variables may contain zero. Use log1p on
         # non-negative series to avoid brittle failures while keeping the
-        # transformation leak-free and monotone. For strictly positive series,
-        # ordinary log-difference is kept.
+        # transformation monotone. Historical branch selection examines the
+        # full snapshot, including future rows. Freeze this choice in advance
+        # or on training data in future experiments; preserve it for this run.
         if (s > 0).all():
             df[f"{col}_logdiff1"] = np.log(s).diff()
         elif (s >= 0).all():
